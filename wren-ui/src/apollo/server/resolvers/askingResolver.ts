@@ -21,6 +21,7 @@ import {
   constructCteSql,
   ThreadRecommendQuestionResult,
 } from '../services/askingService';
+import { persistClarificationKnowledge } from '../services/clarificationKnowledgeService';
 import {
   SuggestedQuestion,
   SampleDatasetName,
@@ -61,6 +62,14 @@ export interface AskingTask {
   sqlGenerationReasoning?: string;
   retrievedTables?: string[];
   invalidSql?: string;
+  clarificationQuestions?: Array<{
+    id: string;
+    question: string;
+    options?: string[];
+    reason?: string;
+  }>;
+  clarificationAnswers?: Record<string, string>;
+  businessRuleViolations?: string[];
   traceId?: string;
   queryId?: string;
 }
@@ -173,14 +182,20 @@ export class AskingResolver {
 
   public async createAskingTask(
     _root: any,
-    args: { data: { question: string; threadId?: number } },
+    args: {
+      data: {
+        question: string;
+        threadId?: number;
+        clarificationAnswers?: Record<string, string>;
+      };
+    },
     ctx: IContext,
   ): Promise<Task> {
-    const { question, threadId } = args.data;
+    const { question, threadId, clarificationAnswers } = args.data;
     const project = await ctx.projectService.getCurrentProject();
 
     const askingService = ctx.askingService;
-    const data = { question };
+    const data = { question, clarificationAnswers };
     const task = await askingService.createAskingTask(data, {
       threadId,
       language: WrenAILanguage[project.language] || WrenAILanguage.EN,
@@ -260,11 +275,13 @@ export class AskingResolver {
     // if taskId is provided, use the result from the asking task
     // otherwise, use the input data
     let threadInput: AskingDetailTaskInput;
+    let trackedAskingResult: TrackedAskingResult | null = null;
     if (data.taskId) {
       const askingTask = await askingService.getAskingTask(data.taskId);
       if (!askingTask) {
         throw new Error(`Asking task ${data.taskId} not found`);
       }
+      trackedAskingResult = askingTask;
 
       threadInput = {
         question: askingTask.question,
@@ -278,6 +295,21 @@ export class AskingResolver {
     const eventName = TelemetryEvent.HOME_CREATE_THREAD;
     try {
       const thread = await askingService.createThread(threadInput);
+      const project = await ctx.projectService.getCurrentProject();
+      await persistClarificationKnowledge(
+        {
+          projectId: project.id,
+          question: trackedAskingResult?.question,
+          clarificationAnswers: trackedAskingResult?.clarificationAnswers,
+          sql: trackedAskingResult?.response?.[0]?.sql,
+        },
+        {
+          instructionRepository: ctx.instructionRepository,
+          instructionService: ctx.instructionService,
+          sqlPairRepository: ctx.sqlPairRepository,
+          sqlPairService: ctx.sqlPairService,
+        },
+      );
       ctx.telemetry.sendEvent(eventName, {});
       return thread;
     } catch (err: any) {
@@ -404,11 +436,13 @@ export class AskingResolver {
     // if taskId is provided, use the result from the asking task
     // otherwise, use the input data
     let threadResponseInput: AskingDetailTaskInput;
+    let trackedAskingResult: TrackedAskingResult | null = null;
     if (data.taskId) {
       const askingTask = await askingService.getAskingTask(data.taskId);
       if (!askingTask) {
         throw new Error(`Asking task ${data.taskId} not found`);
       }
+      trackedAskingResult = askingTask;
 
       threadResponseInput = {
         question: askingTask.question,
@@ -423,6 +457,21 @@ export class AskingResolver {
       const response = await askingService.createThreadResponse(
         threadResponseInput,
         threadId,
+      );
+      const project = await ctx.projectService.getCurrentProject();
+      await persistClarificationKnowledge(
+        {
+          projectId: project.id,
+          question: trackedAskingResult?.question,
+          clarificationAnswers: trackedAskingResult?.clarificationAnswers,
+          sql: trackedAskingResult?.response?.[0]?.sql,
+        },
+        {
+          instructionRepository: ctx.instructionRepository,
+          instructionService: ctx.instructionService,
+          sqlPairRepository: ctx.sqlPairRepository,
+          sqlPairService: ctx.sqlPairService,
+        },
       );
       ctx.telemetry.sendEvent(eventName, { data });
       return response;
@@ -819,6 +868,9 @@ export class AskingResolver {
       invalidSql: askingTask.invalidSql
         ? safeFormatSQL(askingTask.invalidSql)
         : null,
+      clarificationQuestions: askingTask.clarificationQuestions,
+      clarificationAnswers: askingTask.clarificationAnswers,
+      businessRuleViolations: askingTask.businessRuleViolations,
       traceId: askingTask.traceId,
     };
   }

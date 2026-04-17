@@ -14,6 +14,7 @@ import {
 } from '@/apollo/server/utils/apiUtils';
 import {
   AskResult,
+  AskResultStatus,
   WrenAILanguage,
   TextBasedAnswerInput,
   TextBasedAnswerResult,
@@ -32,6 +33,8 @@ const {
   deployService,
   wrenAIAdaptor,
   queryService,
+  instructionService,
+  sqlPairService,
 } = components;
 
 interface AskRequest {
@@ -39,13 +42,22 @@ interface AskRequest {
   sampleSize?: number;
   language?: string;
   threadId?: string;
+  clarificationAnswers?: Record<string, string>;
+  rememberClarification?: boolean;
 }
 
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse,
 ) {
-  const { question, sampleSize, language, threadId } = req.body as AskRequest;
+  const {
+    question,
+    sampleSize,
+    language,
+    threadId,
+    clarificationAnswers,
+    rememberClarification,
+  } = req.body as AskRequest;
   const startTime = Date.now();
   let project;
 
@@ -89,6 +101,7 @@ export default async function handler(
         language:
           language || WrenAILanguage[project.language] || WrenAILanguage.EN,
       },
+      clarificationAnswers,
     });
 
     // Poll for the SQL generation result
@@ -109,6 +122,26 @@ export default async function handler(
       }
 
       await new Promise((resolve) => setTimeout(resolve, 1000)); // Poll every second
+    }
+
+    if (askResult.status === AskResultStatus.CLARIFYING) {
+      await respondWith({
+        res,
+        statusCode: 200,
+        responsePayload: {
+          type: 'NEEDS_CLARIFICATION',
+          clarificationQuestions: askResult.clarificationQuestions || [],
+          businessRuleViolations: askResult.businessRuleViolations || [],
+          threadId: newThreadId,
+        },
+        projectId: project.id,
+        apiType: ApiType.ASK,
+        startTime,
+        requestPayload: req.body,
+        threadId: newThreadId,
+        headers: req.headers as Record<string, string>,
+      });
+      return;
     }
 
     // Validate the AI result
@@ -287,6 +320,34 @@ export default async function handler(
       });
 
       await streamPromise;
+    }
+
+    if (rememberClarification && clarificationAnswers) {
+      try {
+        const clarificationSummary = Object.entries(clarificationAnswers)
+          .filter(([, value]) => !!value)
+          .map(([key, value]) => `- ${key}: ${value}`)
+          .join('\n');
+
+        if (clarificationSummary) {
+          await instructionService.createInstruction({
+            instruction: `When answering questions similar to: "${question}", use these confirmed business meanings:\n${clarificationSummary}`,
+            questions: [question],
+            isDefault: false,
+            projectId: project.id,
+          });
+        }
+
+        await sqlPairService.createSqlPair(project.id, {
+          question,
+          sql,
+        });
+      } catch (knowledgeSaveError) {
+        logger.warn(
+          'Failed to persist clarification feedback to knowledge base',
+          knowledgeSaveError,
+        );
+      }
     }
 
     // Return the combined result

@@ -54,6 +54,7 @@ sql_generation_user_prompt_template = """
 
 {% if sql_samples %}
 ### SQL SAMPLES ###
+If a sample question is semantically close to the user's question, reuse its SQL pattern, table joins, filters, and column choices before inventing a new query.
 {% for sample in sql_samples %}
 Question:
 {{sample.question}}
@@ -72,12 +73,19 @@ SQL:
 ### QUESTION ###
 User's Question: {{ query }}
 
+### BUSINESS GUARDRAILS ###
+- If the question uses business terms like investor, broker, loan, email status, or investment value, prefer reusing SQL samples and user instructions over inventing new semantics.
+- If the business meaning is unclear, preserve the stricter business interpretation already shown in SQL samples and instructions.
+- Avoid simplistic shortcuts such as using coded client_type_id values for broker/loan business semantics unless a sample explicitly proves that mapping.
+- Avoid joining comma-separated account client IDs directly to a single client ID when a safer role-based pattern is available in samples.
+
 {% if sql_generation_reasoning %}
 ### REASONING PLAN ###
 {{ sql_generation_reasoning }}
 {% endif %}
 
-Let's think step by step.
+Return only the final JSON object with one key: sql.
+Do not include explanations, markdown, thoughts, or extra text.
 """
 
 

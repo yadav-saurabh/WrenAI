@@ -103,6 +103,8 @@ export const getSqlGenerationState = (status: AskResultStatus): StateType => {
       return StateType.SQL_GENERATION_GENERATING;
     case AskResultStatus.CORRECTING:
       return StateType.SQL_GENERATION_CORRECTING;
+    case AskResultStatus.CLARIFYING:
+      return StateType.SQL_GENERATION_FAILED;
     case AskResultStatus.FINISHED:
       return StateType.SQL_GENERATION_FINISHED;
     case AskResultStatus.FAILED:

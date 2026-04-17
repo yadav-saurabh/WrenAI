@@ -194,15 +194,19 @@ async def generate(prompt: dict, generator: Any, generator_name: str) -> dict:
 
 @observe(capture_input=False)
 def normalized(generate: dict) -> dict:
-    def wrapper(text: str) -> list:
+    def wrapper(text: str) -> dict:
         text = text.replace("\n", " ")
         text = " ".join(text.split())
         try:
-            text_list = orjson.loads(text.strip())
-            return text_list
+            parsed = orjson.loads(text.strip())
+            if isinstance(parsed, dict):
+                return parsed
+            if isinstance(parsed, list):
+                return {"questions": parsed}
+            return {"questions": []}
         except orjson.JSONDecodeError as e:
             logger.error(f"Error decoding JSON: {e}")
-            return []  # Return an empty list if JSON decoding fails
+            return {"questions": []}
 
     reply = generate.get("replies")[0]  # Expecting only one reply
     normalized = wrapper(reply)

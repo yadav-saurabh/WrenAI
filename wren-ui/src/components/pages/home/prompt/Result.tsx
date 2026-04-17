@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import { ReactNode, useEffect, useRef, memo, useState } from 'react';
-import { Button } from 'antd';
+import { Button, Space, Tag } from 'antd';
 import styled from 'styled-components';
 import { PROCESS_STATE } from '@/utils/enum';
 import { attachLoading } from '@/utils/helper';
@@ -21,6 +21,13 @@ import {
   AskingTaskType,
   RecommendedQuestionsTask,
 } from '@/apollo/client/graphql/__types__';
+
+interface ClarificationQuestion {
+  id: string;
+  question: string;
+  options?: string[];
+  reason?: string;
+}
 
 const StyledResult = styled.div`
   position: absolute;
@@ -45,6 +52,9 @@ interface Props {
     originalQuestion: string;
     askingStreamTask: string;
     recommendedQuestions: RecommendedQuestionsTask;
+    clarificationAnswers?: Record<string, string>;
+    clarificationQuestions?: ClarificationQuestion[];
+    businessRuleViolations?: string[];
     intentReasoning: string;
   };
   error?: any;
@@ -58,6 +68,7 @@ interface Props {
   }) => void;
   onClose: () => void;
   onStop: () => Promise<void>;
+  onAnswerClarification?: (questionId: string, answer: string) => Promise<void>;
   loading?: boolean;
 }
 
@@ -148,8 +159,89 @@ const makeProcessingError =
 
 const ErrorIcon = () => <CloseCircleFilled className="mr-2 red-5 text-lg" />;
 
+const ClarificationNeeded = (props: Props) => {
+  const { onClose, onAnswerClarification, data, error } = props;
+  const clarificationQuestions = data?.clarificationQuestions || [];
+  const clarificationAnswers = data?.clarificationAnswers || {};
+  const remainingQuestion = clarificationQuestions.find(
+    (question) => !clarificationAnswers[question.id],
+  );
+
+  return (
+    <Wrapper>
+      <div className="d-flex justify-space-between text-medium mb-2">
+        <div className="d-flex align-center">
+          <WarningOutlined className="mr-2 text-lg gold-6" />
+          Clarification needed
+        </div>
+        <Button
+          className="adm-btn-no-style gray-7 bg-gray-3 text-sm px-2"
+          type="text"
+          size="small"
+          onClick={onClose}
+        >
+          <CloseOutlined className="-mr-1" />
+          Close
+        </Button>
+      </div>
+      <div className="gray-7 mb-3">
+        {error?.message ||
+          'Please answer one short business question so I can continue.'}
+      </div>
+      {!!data?.businessRuleViolations?.length && (
+        <div className="mb-3">
+          {data.businessRuleViolations.map((violation) => (
+            <Tag key={violation} color="orange" className="mb-2">
+              {violation}
+            </Tag>
+          ))}
+        </div>
+      )}
+      {!!Object.keys(clarificationAnswers).length && (
+        <div className="bg-gray-2 rounded p-3 mb-3">
+          <div className="text-medium gray-8 mb-2">Confirmed so far</div>
+          {clarificationQuestions
+            .filter((question) => clarificationAnswers[question.id])
+            .map((question) => (
+              <div key={question.id} className="mb-2">
+                <div className="gray-6">{question.question}</div>
+                <Tag color="blue">{clarificationAnswers[question.id]}</Tag>
+              </div>
+            ))}
+        </div>
+      )}
+      {remainingQuestion && (
+        <div className="bg-gray-2 rounded p-3">
+          <div className="text-medium gray-8 mb-2">
+            {remainingQuestion.question}
+          </div>
+          {remainingQuestion.reason && (
+            <div className="gray-6 mb-3">{remainingQuestion.reason}</div>
+          )}
+          <Space direction="vertical" style={{ width: '100%' }}>
+            {(remainingQuestion.options || []).map((option) => (
+              <Button
+                key={option}
+                block
+                className="text-left"
+                onClick={() =>
+                  onAnswerClarification?.(remainingQuestion.id, option)
+                }
+              >
+                {option}
+              </Button>
+            ))}
+          </Space>
+        </div>
+      )}
+    </Wrapper>
+  );
+};
+
 const Failed = makeProcessingError({
   icon: <ErrorIcon />,
+  title: 'Something went wrong',
+  description: 'Please try again, or answer the clarification if one is shown.',
 });
 
 const Understanding = makeProcessing('Understanding question');
@@ -267,7 +359,19 @@ const getMisleadingQueryStateComponent = (state: PROCESS_STATE) => {
   );
 };
 
-const getDefaultStateComponent = (state: PROCESS_STATE) => {
+const getDefaultStateComponent = (
+  state: PROCESS_STATE,
+  data?: Props['data'],
+  loading?: boolean,
+) => {
+  if (loading && state === PROCESS_STATE.FAILED) {
+    return Understanding;
+  }
+
+  if (state === PROCESS_STATE.FAILED && data?.clarificationQuestions?.length) {
+    return ClarificationNeeded;
+  }
+
   return (
     {
       [PROCESS_STATE.UNDERSTANDING]: Understanding,
@@ -282,19 +386,28 @@ const getDefaultStateComponent = (state: PROCESS_STATE) => {
   );
 };
 
-const makeProcessStateStrategy = (type: AskingTaskType) => {
+const makeProcessStateStrategy = (
+  type: AskingTaskType,
+  data?: Props['data'],
+  loading?: boolean,
+) => {
   // note that the asking task type only has value when the asking status was finished
   // by default, we use the default state component (also the text to sql state component)
   if (type === AskingTaskType.GENERAL) return getGeneralAnswerStateComponent;
   if (type === AskingTaskType.MISLEADING_QUERY)
     return getMisleadingQueryStateComponent;
-  return getDefaultStateComponent;
+  return (state: PROCESS_STATE) =>
+    getDefaultStateComponent(state, data, loading);
 };
 
 export default memo(function PromptResult(props: Props) {
   const { processState, data } = props;
 
-  const getProcessStateComponent = makeProcessStateStrategy(data?.type);
+  const getProcessStateComponent = makeProcessStateStrategy(
+    data?.type,
+    data,
+    props.loading,
+  );
   const StateComponent = getProcessStateComponent(processState);
 
   if (StateComponent === null) return null;

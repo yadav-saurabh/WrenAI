@@ -602,10 +602,18 @@ export const typeDefs = gql`
   }
 
   # Asking Task
+  type ClarificationQuestion {
+    id: String!
+    question: String!
+    options: [String!]
+    reason: String
+  }
+
   input AskingTaskInput {
     question: String!
     # Used for follow-up questions
     threadId: Int
+    clarificationAnswers: JSON
   }
 
   enum AskingTaskStatus {
@@ -614,6 +622,7 @@ export const typeDefs = gql`
     PLANNING
     GENERATING
     CORRECTING
+    CLARIFYING
     FINISHED
     FAILED
     STOPPED
@@ -666,6 +675,9 @@ export const typeDefs = gql`
     sqlGenerationReasoning: String
     retrievedTables: [String!]
     invalidSql: String
+    clarificationQuestions: [ClarificationQuestion!]
+    clarificationAnswers: JSON
+    businessRuleViolations: [String!]
     traceId: String
     queryId: String
   }

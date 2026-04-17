@@ -22,6 +22,7 @@ interface TrackedTask {
   taskId?: number;
   lastPolled: number;
   question?: string;
+  clarificationAnswers?: Record<string, string>;
   result?: AskResult;
   isFinalized: boolean;
   threadResponseId?: number;
@@ -112,6 +113,7 @@ export class AskingTaskTracker implements IAskingTaskTracker {
         queryId,
         lastPolled: Date.now(),
         question: input.query,
+        clarificationAnswers: input.clarificationAnswers || {},
         isFinalized: false,
         rerunFromCancelled: input.rerunFromCancelled,
       } as TrackedTask;
@@ -160,6 +162,7 @@ export class AskingTaskTracker implements IAskingTaskTracker {
     if (trackedTask && trackedTask.result) {
       return {
         ...trackedTask.result,
+        clarificationAnswers: trackedTask.clarificationAnswers,
         queryId,
         question: trackedTask.question,
         taskId: trackedTask.taskId,
@@ -264,7 +267,10 @@ export class AskingTaskTracker implements IAskingTaskTracker {
             }
 
             // update task in memory if any change
-            task.result = result;
+            task.result = {
+              ...result,
+              clarificationAnswers: task.clarificationAnswers,
+            };
 
             // if result is still understanding, we don't need to update the database
             if (result.status === AskResultStatus.UNDERSTANDING) {
@@ -454,6 +460,7 @@ export class AskingTaskTracker implements IAskingTaskTracker {
       AskResultStatus.FINISHED,
       AskResultStatus.FAILED,
       AskResultStatus.STOPPED,
+      AskResultStatus.CLARIFYING,
     ].includes(status);
   }
 

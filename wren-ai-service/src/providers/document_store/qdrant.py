@@ -29,6 +29,20 @@ from src.providers.loader import provider
 
 logger = logging.getLogger("wren-ai-service")
 
+# qdrant-haystack may pass init_from=None to qdrant-client versions whose
+# create_collection() signature accepts **kwargs but rejects unknown keys.
+# Drop this no-op kwarg for compatibility.
+_original_create_collection = qdrant_client.QdrantClient.create_collection
+
+
+def _create_collection_compat(self, *args, **kwargs):
+    if kwargs.get("init_from") is None:
+        kwargs.pop("init_from", None)
+    return _original_create_collection(self, *args, **kwargs)
+
+
+qdrant_client.QdrantClient.create_collection = _create_collection_compat
+
 
 def convert_haystack_documents_to_qdrant_points(
     documents: List[Document],
@@ -132,7 +146,6 @@ class AsyncQdrantDocumentStore(QdrantDocumentStore):
             optimizers_config=optimizers_config,
             wal_config=wal_config,
             quantization_config=quantization_config,
-            init_from=init_from,
             wait_result_from_api=wait_result_from_api,
             metadata=metadata,
             write_batch_size=write_batch_size,
@@ -172,12 +185,18 @@ class AsyncQdrantDocumentStore(QdrantDocumentStore):
     ) -> List[Document]:
         qdrant_filters = convert_filters_to_qdrant(filters)
 
-        points = await self.async_client.search(
-            collection_name=self.index,
-            query_vector=rest.NamedVector(
+        query = (
+            rest.NamedVector(
                 name=DENSE_VECTORS_NAME if self.use_sparse_embeddings else "",
                 vector=query_embedding,
-            ),
+            )
+            if self.use_sparse_embeddings
+            else query_embedding
+        )
+        response = await self.async_client.query_points(
+            collection_name=self.index,
+            query=query,
+            using=DENSE_VECTORS_NAME if self.use_sparse_embeddings else None,
             search_params=(
                 rest.SearchParams(
                     quantization=rest.QuantizationSearchParams(
@@ -193,6 +212,7 @@ class AsyncQdrantDocumentStore(QdrantDocumentStore):
             limit=top_k,
             with_vectors=return_embedding,
         )
+        points = response.points if hasattr(response, "points") else response
         results = [
             convert_qdrant_point_to_haystack_document(
                 point, use_sparse_embeddings=self.use_sparse_embeddings

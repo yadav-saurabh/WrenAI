@@ -7,7 +7,6 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 # Learn more here: https://nextjs.org/telemetry
 # Uncomment the following line in case you want to disable telemetry during the build.
 ENV NEXT_TELEMETRY_DISABLED 1
-ENV NODE_ENV production
 
 WORKDIR /app
 
@@ -40,6 +39,7 @@ RUN yarn build
 
 # Production image, copy all the files and run next
 FROM base AS runner
+ENV NODE_ENV production
 WORKDIR /app
 
 COPY --from=builder /app/public ./public

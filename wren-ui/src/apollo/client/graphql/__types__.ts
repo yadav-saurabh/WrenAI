@@ -97,7 +97,10 @@ export enum ApiType {
 
 export type AskingTask = {
   __typename?: 'AskingTask';
+  businessRuleViolations?: Maybe<Array<Scalars['String']>>;
   candidates: Array<ResultCandidate>;
+  clarificationAnswers?: Maybe<Scalars['JSON']>;
+  clarificationQuestions?: Maybe<Array<ClarificationQuestion>>;
   error?: Maybe<Error>;
   intentReasoning?: Maybe<Scalars['String']>;
   invalidSql?: Maybe<Scalars['String']>;
@@ -110,12 +113,22 @@ export type AskingTask = {
   type?: Maybe<AskingTaskType>;
 };
 
+export type ClarificationQuestion = {
+  __typename?: 'ClarificationQuestion';
+  id: Scalars['String'];
+  options?: Maybe<Array<Scalars['String']>>;
+  question: Scalars['String'];
+  reason?: Maybe<Scalars['String']>;
+};
+
 export type AskingTaskInput = {
+  clarificationAnswers?: InputMaybe<Scalars['JSON']>;
   question: Scalars['String'];
   threadId?: InputMaybe<Scalars['Int']>;
 };
 
 export enum AskingTaskStatus {
+  CLARIFYING = 'CLARIFYING',
   CORRECTING = 'CORRECTING',
   FAILED = 'FAILED',
   FINISHED = 'FINISHED',

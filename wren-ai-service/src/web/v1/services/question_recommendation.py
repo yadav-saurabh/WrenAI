@@ -34,6 +34,7 @@ class QuestionRecommendation:
         maxsize: int = 1_000_000,
         ttl: int = 120,
         allow_sql_knowledge_retrieval: bool = True,
+        validation_timeout: int = 45,
     ):
         self._pipelines = pipelines
         self._cache: Dict[str, QuestionRecommendation.Event] = TTLCache(
@@ -41,6 +42,7 @@ class QuestionRecommendation:
         )
         self._allow_sql_functions_retrieval = allow_sql_functions_retrieval
         self._allow_sql_knowledge_retrieval = allow_sql_knowledge_retrieval
+        self._validation_timeout = validation_timeout
 
     def _handle_exception(
         self,
@@ -178,18 +180,26 @@ class QuestionRecommendation:
         resp = await self._pipelines["question_recommendation"].run(**request)
         questions = resp.get("normalized", {}).get("questions", [])
         validation_tasks = [
-            self._validate_question(
-                question,
-                request["event_id"],
-                request["max_questions"],
-                request["max_categories"],
-                project_id=request["project_id"],
-                allow_data_preview=request["allow_data_preview"],
+            asyncio.wait_for(
+                self._validate_question(
+                    question,
+                    request["event_id"],
+                    request["max_questions"],
+                    request["max_categories"],
+                    project_id=request["project_id"],
+                    allow_data_preview=request["allow_data_preview"],
+                ),
+                timeout=self._validation_timeout,
             )
             for question in questions
         ]
 
-        await asyncio.gather(*validation_tasks, return_exceptions=True)
+        results = await asyncio.gather(*validation_tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(
+                    f"Request {request['event_id']}: recommendation validation task ended with exception: {result}"
+                )
 
     @observe(name="Generate Question Recommendation")
     @trace_metadata

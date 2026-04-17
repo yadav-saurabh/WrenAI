@@ -75,6 +75,7 @@ export interface AskInput {
   deployId: string;
   histories?: ThreadResponse[];
   configurations?: ProjectConfigurations;
+  clarificationAnswers?: Record<string, string>;
 }
 
 export interface AsyncQueryResponse {
@@ -87,6 +88,7 @@ export enum AskResultStatus {
   PLANNING = 'PLANNING',
   GENERATING = 'GENERATING',
   CORRECTING = 'CORRECTING',
+  CLARIFYING = 'CLARIFYING',
   FINISHED = 'FINISHED',
   FAILED = 'FAILED',
   STOPPED = 'STOPPED',
@@ -112,6 +114,13 @@ export interface AskResponse<R, S> {
   status: S;
   response: R | null;
   error: WrenAIError | null;
+}
+
+export interface ClarificationQuestion {
+  id: string;
+  question: string;
+  options?: string[];
+  reason?: string;
 }
 
 export interface AskDetailInput {
@@ -143,6 +152,9 @@ export type AskResult = AskResponse<
   retrievedTables?: string[];
   invalidSql?: string;
   traceId?: string;
+  clarificationQuestions?: ClarificationQuestion[];
+  clarificationAnswers?: Record<string, string>;
+  businessRuleViolations?: string[];
 };
 
 export enum RecommendationQuestionStatus {

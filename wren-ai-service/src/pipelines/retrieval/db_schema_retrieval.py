@@ -27,64 +27,30 @@ logger = logging.getLogger("wren-ai-service")
 
 table_columns_selection_system_prompt = """
 ### TASK ###
-You are a highly skilled data analyst. Your goal is to examine the provided database schema, interpret the posed question, and identify the specific columns from the relevant tables required to construct an accurate SQL query.
-
-The database schema includes tables, columns, primary keys, foreign keys, relationships, and any relevant constraints.
+You are a highly skilled data analyst. Examine the provided database schema, interpret the user's question, and identify the specific tables and columns needed to build an accurate SQL query.
 
 ### INSTRUCTIONS ###
-1. Carefully analyze the schema and identify the essential tables and columns needed to answer the question.
-2. For each table, provide a clear and concise reasoning for why specific columns are selected.
-3. List each reason as part of a step-by-step chain of thought, justifying the inclusion of each column.
+1. Choose only the tables and columns needed to answer the question.
+2. Keep reasons short and factual. Do not reveal hidden chain-of-thought.
+3. If a SQL sample or user instruction implies a known pattern, choose the columns required to support that pattern.
 4. If a "." is included in columns, put the name before the first dot into chosen columns.
-5. The number of columns chosen must match the number of reasoning.
-6. Final chosen columns must be only column names, don't prefix it with table names.
-7. If the chosen column is a child column of a STRUCT type column, choose the parent column instead of the child column.
+5. Final chosen columns must be only column names, not table-qualified names.
+6. If the chosen column is a child column of a STRUCT type column, choose the parent column instead.
+7. Return ONLY valid JSON. No markdown fences, no explanation before or after the JSON.
 
 ### FINAL ANSWER FORMAT ###
-Please provide your response as a JSON object, structured as follows:
-
 {
-    "results": [
-        {
-            "table_selection_reason": "Reason for selecting tablename1",
-            "table_contents": {
-              "chain_of_thought_reasoning": [
-                  "Reason 1 for selecting column1",
-                  "Reason 2 for selecting column2",
-                  ...
-              ],
-              "columns": ["column1", "column2", ...]
-            },
-            "table_name":"tablename1",
-        },
-        {
-            "table_selection_reason": "Reason for selecting tablename2",
-            "table_contents":
-            {
-              "chain_of_thought_reasoning": [
-                  "Reason 1 for selecting column1",
-                  "Reason 2 for selecting column2",
-                  ...
-              ],
-              "columns": ["column1", "column2", ...]
-            },
-            "table_name":"tablename2"
-        },
-        ...
-    ]
+  "results": [
+    {
+      "table_selection_reason": "short reason",
+      "table_contents": {
+        "chain_of_thought_reasoning": ["short reason 1", "short reason 2"],
+        "columns": ["column1", "column2"]
+      },
+      "table_name": "tablename1"
+    }
+  ]
 }
-
-### ADDITIONAL NOTES ###
-- Each table key must list only the columns relevant to answering the question.
-- Provide a reasoning list (`chain_of_thought_reasoning`) for each table, explaining why each column is necessary.
-- Provide the reason of selecting the table in (`table_selection_reason`) for each table.
-- Be logical, concise, and ensure the output strictly follows the required JSON format.
-- Use table name used in the "Create Table" statement, don't use "alias".
-- Match Column names with the definition in the "Create Table" statement.
-- Match Table names with the definition in the "Create Table" statement.
-
-Good luck!
-
 """
 
 table_columns_selection_user_prompt_template = """
@@ -346,9 +312,27 @@ def construct_retrieval_results(
     dbschema_retrieval: list[Document],
 ) -> dict[str, Any]:
     if filter_columns_in_tables:
-        columns_and_tables_needed = orjson.loads(
-            filter_columns_in_tables["replies"][0]
-        )["results"]
+        try:
+            raw_reply = filter_columns_in_tables["replies"][0]
+            json_match = raw_reply
+            if not raw_reply.strip().startswith("{"):
+                import re
+
+                match = re.search(r"\{.*\}", raw_reply, re.DOTALL)
+                json_match = match.group(0) if match else raw_reply
+
+            columns_and_tables_needed = orjson.loads(json_match)["results"]
+        except Exception as e:
+            logger.warning(f"Failed to parse pruned column selection, fallback to unpruned schema: {e}")
+            retrieval_results = check_using_db_schemas_without_pruning["db_schemas"]
+            return {
+                "retrieval_results": retrieval_results,
+                "has_calculated_field": check_using_db_schemas_without_pruning[
+                    "has_calculated_field"
+                ],
+                "has_metric": check_using_db_schemas_without_pruning["has_metric"],
+                "has_json_field": check_using_db_schemas_without_pruning["has_json_field"],
+            }
 
         # we need to change the below code to match the new schema of structured output
         # the objective of this loop is to change the structure of JSON to match the needed format

@@ -156,6 +156,7 @@ export default async function handler(
         language:
           language || WrenAILanguage[project.language] || WrenAILanguage.EN,
       },
+      clarificationAnswers: (req.body as any).clarificationAnswers,
     });
 
     // Poll for the SQL generation result
@@ -178,6 +179,8 @@ export default async function handler(
           retrievedTables: askResult.retrievedTables,
           invalidSql: askResult.invalidSql,
           traceId: askResult.traceId,
+          clarificationQuestions: askResult.clarificationQuestions,
+          businessRuleViolations: askResult.businessRuleViolations,
         });
         previousStatus = askResult.status;
       }
@@ -200,6 +203,21 @@ export default async function handler(
 
       // Wait before polling again
       await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    if (askResult.status === AskResultStatus.CLARIFYING) {
+      sendError(
+        res,
+        'More business context is needed before generating SQL',
+        Errors.GeneralErrorCodes.AI_SERVICE_UNDEFINED_ERROR,
+        {
+          type: 'NEEDS_CLARIFICATION',
+          clarificationQuestions: askResult.clarificationQuestions || [],
+          businessRuleViolations: askResult.businessRuleViolations || [],
+        },
+      );
+      endStream(res, newThreadId, startTime);
+      return;
     }
 
     // Validate the ask result

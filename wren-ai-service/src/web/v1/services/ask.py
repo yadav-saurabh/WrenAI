@@ -7,6 +7,12 @@ from langfuse.decorators import observe
 from pydantic import AliasChoices, BaseModel, Field
 
 from src.core.pipeline import BasicPipeline
+from src.pipelines.generation.business_semantics import (
+    ClarificationQuestion,
+    apply_clarification_answers,
+    detect_clarifications,
+    validate_generated_sql,
+)
 from src.utils import trace_metadata
 from src.web.v1.services import BaseRequest, SSEEvent
 
@@ -21,6 +27,7 @@ class AskHistory(BaseModel):
 # POST /v1/asks
 class AskRequest(BaseRequest):
     query: str
+    clarification_answers: Optional[dict[str, str]] = None
     # don't recommend to use id as a field name, but it's used in the older version of API spec
     # so we need to support as a choice, and will remove it in the future
     mdl_hash: Optional[str] = Field(validation_alias=AliasChoices("mdl_hash", "id"))
@@ -53,8 +60,15 @@ class AskResult(BaseModel):
 
 
 class AskError(BaseModel):
-    code: Literal["NO_RELEVANT_DATA", "NO_RELEVANT_SQL", "OTHERS"]
+    code: Literal["NO_RELEVANT_DATA", "NO_RELEVANT_SQL", "NEEDS_CLARIFICATION", "OTHERS"]
     message: str
+
+
+class AskClarificationQuestion(BaseModel):
+    id: str
+    question: str
+    options: Optional[List[str]] = None
+    reason: Optional[str] = None
 
 
 class AskResultRequest(BaseModel):
@@ -68,6 +82,7 @@ class _AskResultResponse(BaseModel):
         "planning",
         "generating",
         "correcting",
+        "clarifying",
         "finished",
         "failed",
         "stopped",
@@ -81,6 +96,8 @@ class _AskResultResponse(BaseModel):
     invalid_sql: Optional[str] = None
     error: Optional[AskError] = None
     trace_id: Optional[str] = None
+    clarification_questions: Optional[List[AskClarificationQuestion]] = None
+    business_rule_violations: Optional[List[str]] = None
     is_followup: bool = False
     general_type: Optional[
         Literal["MISLEADING_QUERY", "DATA_ASSISTANCE", "USER_GUIDE"]
@@ -176,9 +193,12 @@ class AskService:
         use_dry_plan = ask_request.use_dry_plan
         allow_dry_plan_fallback = ask_request.allow_dry_plan_fallback
         sql_knowledge = None
+        clarification_questions = []
+        business_rule_violations = []
 
         try:
             user_query = ask_request.query
+            generation_query = ask_request.query
 
             # ask status can be understanding, searching, generating, finished, failed, stopped
             # we will need to handle business logic for each status
@@ -233,6 +253,52 @@ class AskService:
                         "documents", []
                     )
 
+                    clarification_result = detect_clarifications(
+                        user_query,
+                        ask_request.clarification_answers,
+                    )
+                    if clarification_result.needs_clarification:
+                        clarification_questions = [
+                            AskClarificationQuestion(
+                                id=question.id,
+                                question=question.question,
+                                options=question.options,
+                                reason=question.reason,
+                            )
+                            for question in clarification_result.questions
+                        ]
+                        clarification_message = " ".join(
+                            [
+                                "I need a bit more business context before I generate SQL.",
+                                *[
+                                    f"{index}. {question.question}"
+                                    for index, question in enumerate(
+                                        clarification_questions, start=1
+                                    )
+                                ],
+                            ]
+                        )
+                        self._ask_results[query_id] = AskResultResponse(
+                            status="clarifying",
+                            type="TEXT_TO_SQL",
+                            rephrased_question=rephrased_question,
+                            trace_id=trace_id,
+                            clarification_questions=clarification_questions,
+                            error=AskError(
+                                code="NEEDS_CLARIFICATION",
+                                message=clarification_message,
+                            ),
+                            is_followup=True if histories else False,
+                        )
+                        results["metadata"]["error_type"] = "NEEDS_CLARIFICATION"
+                        results["metadata"]["type"] = "TEXT_TO_SQL"
+                        return results
+
+                    generation_query = apply_clarification_answers(
+                        user_query,
+                        ask_request.clarification_answers,
+                    )
+
                     if self._allow_intent_classification:
                         intent_classification_result = (
                             await self._pipelines["intent_classification"].run(
@@ -252,6 +318,10 @@ class AskService:
 
                         if rephrased_question:
                             user_query = rephrased_question
+                            generation_query = apply_clarification_answers(
+                                rephrased_question,
+                                ask_request.clarification_answers,
+                            )
 
                         if intent == "MISLEADING_QUERY":
                             asyncio.create_task(
@@ -393,7 +463,7 @@ class AskService:
                 if histories:
                     sql_generation_reasoning = (
                         await self._pipelines["followup_sql_generation_reasoning"].run(
-                            query=user_query,
+                            query=generation_query,
                             contexts=table_ddls,
                             histories=histories,
                             sql_samples=sql_samples,
@@ -405,7 +475,7 @@ class AskService:
                 else:
                     sql_generation_reasoning = (
                         await self._pipelines["sql_generation_reasoning"].run(
-                            query=user_query,
+                            query=generation_query,
                             contexts=table_ddls,
                             sql_samples=sql_samples,
                             instructions=instructions,
@@ -463,7 +533,7 @@ class AskService:
                     text_to_sql_generation_results = await self._pipelines[
                         "followup_sql_generation"
                     ].run(
-                        query=user_query,
+                        query=generation_query,
                         contexts=table_ddls,
                         sql_generation_reasoning=sql_generation_reasoning,
                         histories=histories,
@@ -482,7 +552,7 @@ class AskService:
                     text_to_sql_generation_results = await self._pipelines[
                         "sql_generation"
                     ].run(
-                        query=user_query,
+                        query=generation_query,
                         contexts=table_ddls,
                         sql_generation_reasoning=sql_generation_reasoning,
                         project_id=ask_request.project_id,
@@ -500,14 +570,72 @@ class AskService:
                 if sql_valid_result := text_to_sql_generation_results["post_process"][
                     "valid_generation_result"
                 ]:
-                    api_results = [
-                        AskResult(
-                            **{
-                                "sql": sql_valid_result.get("sql"),
-                                "type": "llm",
-                            }
+                    validation_result = validate_generated_sql(
+                        question=ask_request.query,
+                        sql=sql_valid_result.get("sql"),
+                        sql_samples=sql_samples,
+                    )
+                    business_rule_violations = validation_result.violations
+                    if validation_result.valid:
+                        api_results = [
+                            AskResult(
+                                **{
+                                    "sql": sql_valid_result.get("sql"),
+                                    "type": "llm",
+                                }
+                            )
+                        ]
+                    elif validation_result.clarification_questions:
+                        clarification_questions = [
+                            AskClarificationQuestion(
+                                id=question.id,
+                                question=question.question,
+                                options=question.options,
+                                reason=question.reason,
+                            )
+                            for question in validation_result.clarification_questions
+                        ]
+                        clarification_message = " ".join(
+                            [
+                                "The business meaning of this question is still ambiguous.",
+                                *[
+                                    f"{index}. {question.question}"
+                                    for index, question in enumerate(
+                                        clarification_questions, start=1
+                                    )
+                                ],
+                            ]
                         )
-                    ]
+                        self._ask_results[query_id] = AskResultResponse(
+                            status="clarifying",
+                            type="TEXT_TO_SQL",
+                            rephrased_question=rephrased_question,
+                            intent_reasoning=intent_reasoning,
+                            retrieved_tables=table_names,
+                            sql_generation_reasoning=sql_generation_reasoning,
+                            business_rule_violations=business_rule_violations,
+                            clarification_questions=clarification_questions,
+                            error=AskError(
+                                code="NEEDS_CLARIFICATION",
+                                message=clarification_message,
+                            ),
+                            trace_id=trace_id,
+                            is_followup=True if histories else False,
+                        )
+                        results["metadata"]["error_type"] = "NEEDS_CLARIFICATION"
+                        results["metadata"]["type"] = "TEXT_TO_SQL"
+                        return results
+                    elif validation_result.fallback_sql:
+                        api_results = [
+                            AskResult(
+                                **{
+                                    "sql": validation_result.fallback_sql,
+                                    "type": "llm",
+                                }
+                            )
+                        ]
+                    else:
+                        error_message = "; ".join(business_rule_violations)
                 elif failed_dry_run_result := text_to_sql_generation_results[
                     "post_process"
                 ]["invalid_generation_result"]:
@@ -566,15 +694,34 @@ class AskService:
                         if valid_generation_result := sql_correction_results[
                             "post_process"
                         ]["valid_generation_result"]:
-                            api_results = [
-                                AskResult(
-                                    **{
-                                        "sql": valid_generation_result.get("sql"),
-                                        "type": "llm",
-                                    }
-                                )
-                            ]
-                            break
+                            validation_result = validate_generated_sql(
+                                question=ask_request.query,
+                                sql=valid_generation_result.get("sql"),
+                                sql_samples=sql_samples,
+                            )
+                            business_rule_violations = validation_result.violations
+                            if validation_result.valid:
+                                api_results = [
+                                    AskResult(
+                                        **{
+                                            "sql": valid_generation_result.get("sql"),
+                                            "type": "llm",
+                                        }
+                                    )
+                                ]
+                                break
+                            elif validation_result.fallback_sql:
+                                api_results = [
+                                    AskResult(
+                                        **{
+                                            "sql": validation_result.fallback_sql,
+                                            "type": "llm",
+                                        }
+                                    )
+                                ]
+                                break
+                            else:
+                                error_message = "; ".join(business_rule_violations)
 
                         failed_dry_run_result = sql_correction_results["post_process"][
                             "invalid_generation_result"
@@ -590,6 +737,8 @@ class AskService:
                         intent_reasoning=intent_reasoning,
                         retrieved_tables=table_names,
                         sql_generation_reasoning=sql_generation_reasoning,
+                        business_rule_violations=business_rule_violations,
+                        clarification_questions=clarification_questions,
                         trace_id=trace_id,
                         is_followup=True if histories else False,
                     )
@@ -610,6 +759,8 @@ class AskService:
                         retrieved_tables=table_names,
                         sql_generation_reasoning=sql_generation_reasoning,
                         invalid_sql=invalid_sql,
+                        clarification_questions=clarification_questions,
+                        business_rule_violations=business_rule_violations,
                         trace_id=trace_id,
                         is_followup=True if histories else False,
                     )

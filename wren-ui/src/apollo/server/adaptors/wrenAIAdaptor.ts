@@ -239,6 +239,7 @@ export class WrenAIAdaptor implements IWrenAIAdaptor {
         id: input.deployId,
         histories: this.transformHistoryInput(input.histories),
         configurations: input.configurations,
+        clarification_answers: input.clarificationAnswers,
       });
       return { queryId: res.data.query_id };
     } catch (err: any) {
@@ -833,6 +834,8 @@ export class WrenAIAdaptor implements IWrenAIAdaptor {
       retrievedTables: body?.retrieved_tables,
       invalidSql: body?.invalid_sql,
       traceId: body?.trace_id,
+      clarificationQuestions: body?.clarification_questions,
+      businessRuleViolations: body?.business_rule_violations,
     };
   }
 
@@ -897,9 +900,24 @@ export class WrenAIAdaptor implements IWrenAIAdaptor {
       code === Errors.GeneralErrorCodes.NO_RELEVANT_SQL ||
       code === Errors.GeneralErrorCodes.AI_SERVICE_UNDEFINED_ERROR;
 
-    const error = code
+    if (code === 'NEEDS_CLARIFICATION') {
+      return {
+        status,
+        error: {
+          code: Errors.GeneralErrorCodes.AI_SERVICE_UNDEFINED_ERROR,
+          message:
+            body?.error?.message ||
+            'I need a bit more business context before I generate SQL.',
+          shortMessage: 'Clarification needed',
+        },
+      };
+    }
+
+    const normalizedCode = code;
+
+    const error = normalizedCode
       ? Errors.create(
-          code,
+          normalizedCode,
           isShowAIServiceErrorMessage
             ? {
                 customMessage: body?.error?.message,

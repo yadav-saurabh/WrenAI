@@ -27,6 +27,7 @@ export class ProjectRecommendQuestionBackgroundTracker {
   private wrenAIAdaptor: IWrenAIAdaptor;
   private projectRepository: IProjectRepository;
   private runningJobs = new Set();
+  private stalledPolls: Record<number, number> = {};
   private telemetry: ITelemetry;
   private logger: Logger;
 
@@ -60,73 +61,117 @@ export class ProjectRecommendQuestionBackgroundTracker {
         // mark the job as running
         this.runningJobs.add(this.taskKey(project));
 
-        // get the latest result from AI service
+        try {
+          const result =
+            await this.wrenAIAdaptor.getRecommendationQuestionsResult(
+              project.queryId,
+            );
 
-        const result =
-          await this.wrenAIAdaptor.getRecommendationQuestionsResult(
-            project.queryId,
-          );
+          // check if status change
+          if (
+            project.questionsStatus === result.status &&
+            result.response?.questions.length ===
+              (project.questions || []).length
+          ) {
+            const taskKey = this.taskKey(project);
+            this.stalledPolls[taskKey] = (this.stalledPolls[taskKey] || 0) + 1;
 
-        // check if status change
-        if (
-          project.questionsStatus === result.status &&
-          result.response?.questions.length === (project.questions || []).length
-        ) {
-          // mark the job as finished
-          this.logger.debug(
-            `${loggerPrefix}job ${this.taskKey(project)} status not changed, returning question count: ${result.response?.questions.length || 0}`,
-          );
-          this.runningJobs.delete(this.taskKey(project));
-          return;
-        }
+            if (
+              result.status === RecommendationQuestionStatus.GENERATING &&
+              (result.response?.questions.length || 0) === 0 &&
+              this.stalledPolls[taskKey] >= 15
+            ) {
+              const message =
+                'Recommendation generation timed out or hit model quota. Please retry.';
+              this.logger.error(
+                `${loggerPrefix}job ${taskKey} exceeded stalled polling limit, marking failed`,
+              );
+              await this.projectRepository.updateOne(project.id, {
+                questionsStatus: RecommendationQuestionStatus.FAILED,
+                questionsError: {
+                  code: 'OTHERS',
+                  message,
+                },
+              });
+              project.questionsStatus = RecommendationQuestionStatus.FAILED;
+              delete this.tasks[taskKey];
+              delete this.stalledPolls[taskKey];
+              return;
+            }
 
-        // update database
-        if (
-          result.status !== project.questionsStatus ||
-          result.response?.questions.length !== (project.questions || []).length
-        ) {
-          this.logger.debug(
-            `${loggerPrefix}job ${this.taskKey(project)} have changes, returning question count: ${result.response?.questions.length || 0}, updating`,
+            this.logger.debug(
+              `${loggerPrefix}job ${taskKey} status not changed, returning question count: ${result.response?.questions.length || 0}`,
+            );
+            return;
+          }
+
+          this.stalledPolls[this.taskKey(project)] = 0;
+
+          // update database
+          if (
+            result.status !== project.questionsStatus ||
+            result.response?.questions.length !==
+              (project.questions || []).length
+          ) {
+            this.logger.debug(
+              `${loggerPrefix}job ${this.taskKey(project)} have changes, returning question count: ${result.response?.questions.length || 0}, updating`,
+            );
+            await this.projectRepository.updateOne(project.id, {
+              questionsStatus: result.status.toUpperCase(),
+              questions: result.response?.questions,
+              questionsError: result.error,
+            });
+            project.questionsStatus = result.status;
+            project.questions = result.response?.questions;
+          }
+
+          // remove the task from tracker if it is finalized
+          if (isFinalized(result.status)) {
+            const eventProperties = {
+              projectId: project.id,
+              projectType: project.type,
+              status: result.status,
+              questions: project.questions,
+              error: result.error,
+            };
+            if (result.status === RecommendationQuestionStatus.FINISHED) {
+              this.telemetry.sendEvent(
+                TelemetryEvent.HOME_GENERATE_PROJECT_RECOMMENDATION_QUESTIONS,
+                eventProperties,
+              );
+            } else {
+              this.telemetry.sendEvent(
+                TelemetryEvent.HOME_GENERATE_PROJECT_RECOMMENDATION_QUESTIONS,
+                eventProperties,
+                WrenService.AI,
+                false,
+              );
+            }
+            this.logger.debug(
+              `${loggerPrefix}job ${this.taskKey(project)} is finalized, removing`,
+            );
+            delete this.tasks[this.taskKey(project)];
+            delete this.stalledPolls[this.taskKey(project)];
+          }
+        } catch (error: any) {
+          const message =
+            error?.message || 'Failed to fetch recommendation question result';
+          this.logger.error(
+            `${loggerPrefix}job ${this.taskKey(project)} failed while polling: ${message}`,
           );
           await this.projectRepository.updateOne(project.id, {
-            questionsStatus: result.status.toUpperCase(),
-            questions: result.response?.questions,
-            questionsError: result.error,
+            questionsStatus: RecommendationQuestionStatus.FAILED,
+            questionsError: {
+              code: 'OTHERS',
+              message,
+            },
           });
-          project.questionsStatus = result.status;
-          project.questions = result.response?.questions;
-        }
-
-        // remove the task from tracker if it is finalized
-        if (isFinalized(result.status)) {
-          const eventProperties = {
-            projectId: project.id,
-            projectType: project.type,
-            status: result.status,
-            questions: project.questions,
-            error: result.error,
-          };
-          if (result.status === RecommendationQuestionStatus.FINISHED) {
-            this.telemetry.sendEvent(
-              TelemetryEvent.HOME_GENERATE_PROJECT_RECOMMENDATION_QUESTIONS,
-              eventProperties,
-            );
-          } else {
-            this.telemetry.sendEvent(
-              TelemetryEvent.HOME_GENERATE_PROJECT_RECOMMENDATION_QUESTIONS,
-              eventProperties,
-              WrenService.AI,
-              false,
-            );
-          }
-          this.logger.debug(
-            `${loggerPrefix}job ${this.taskKey(project)} is finalized, removing`,
-          );
+          project.questionsStatus = RecommendationQuestionStatus.FAILED;
           delete this.tasks[this.taskKey(project)];
+          delete this.stalledPolls[this.taskKey(project)];
+        } finally {
+          this.runningJobs.delete(this.taskKey(project));
         }
-
-        // mark the job as finished
-        this.runningJobs.delete(this.taskKey(project));
       });
 
       // run the jobs
@@ -177,6 +222,7 @@ export class ThreadRecommendQuestionBackgroundTracker {
   private wrenAIAdaptor: IWrenAIAdaptor;
   private threadRepository: IThreadRepository;
   private runningJobs = new Set();
+  private stalledPolls: Record<number, number> = {};
   private telemetry: ITelemetry;
   private logger: Logger;
 
@@ -210,72 +256,116 @@ export class ThreadRecommendQuestionBackgroundTracker {
         // mark the job as running
         this.runningJobs.add(this.taskKey(thread));
 
-        // get the latest result from AI service
+        try {
+          const result =
+            await this.wrenAIAdaptor.getRecommendationQuestionsResult(
+              thread.queryId,
+            );
 
-        const result =
-          await this.wrenAIAdaptor.getRecommendationQuestionsResult(
-            thread.queryId,
-          );
+          // check if status change
+          if (
+            thread.questionsStatus === result.status &&
+            result.response?.questions.length ===
+              (thread.questions || []).length
+          ) {
+            const taskKey = this.taskKey(thread);
+            this.stalledPolls[taskKey] = (this.stalledPolls[taskKey] || 0) + 1;
 
-        // check if status change
-        if (
-          thread.questionsStatus === result.status &&
-          result.response?.questions.length === (thread.questions || []).length
-        ) {
-          // mark the job as finished
-          this.logger.debug(
-            `${loggerPrefix}job ${this.taskKey(thread)} status not changed, returning question count: ${result.response?.questions.length || 0}`,
-          );
-          this.runningJobs.delete(this.taskKey(thread));
-          return;
-        }
+            if (
+              result.status === RecommendationQuestionStatus.GENERATING &&
+              (result.response?.questions.length || 0) === 0 &&
+              this.stalledPolls[taskKey] >= 15
+            ) {
+              const message =
+                'Recommendation generation timed out or hit model quota. Please retry.';
+              this.logger.error(
+                `${loggerPrefix}job ${taskKey} exceeded stalled polling limit, marking failed`,
+              );
+              await this.threadRepository.updateOne(thread.id, {
+                questionsStatus: RecommendationQuestionStatus.FAILED,
+                questionsError: {
+                  code: 'OTHERS',
+                  message,
+                },
+              });
+              thread.questionsStatus = RecommendationQuestionStatus.FAILED;
+              delete this.tasks[taskKey];
+              delete this.stalledPolls[taskKey];
+              return;
+            }
 
-        // update database
-        if (
-          result.status !== thread.questionsStatus ||
-          result.response?.questions.length !== (thread.questions || []).length
-        ) {
-          this.logger.debug(
-            `${loggerPrefix}job ${this.taskKey(thread)} have changes, returning question count: ${result.response?.questions.length || 0}, updating`,
+            this.logger.debug(
+              `${loggerPrefix}job ${taskKey} status not changed, returning question count: ${result.response?.questions.length || 0}`,
+            );
+            return;
+          }
+
+          this.stalledPolls[this.taskKey(thread)] = 0;
+
+          // update database
+          if (
+            result.status !== thread.questionsStatus ||
+            result.response?.questions.length !==
+              (thread.questions || []).length
+          ) {
+            this.logger.debug(
+              `${loggerPrefix}job ${this.taskKey(thread)} have changes, returning question count: ${result.response?.questions.length || 0}, updating`,
+            );
+            await this.threadRepository.updateOne(thread.id, {
+              questionsStatus: result.status.toUpperCase(),
+              questions: result.response?.questions,
+              questionsError: result.error,
+            });
+            thread.questionsStatus = result.status;
+            thread.questions = result.response?.questions;
+          }
+
+          // remove the task from tracker if it is finalized
+          if (isFinalized(result.status)) {
+            const eventProperties = {
+              thread_id: thread.id,
+              status: result.status,
+              questions: thread.questions,
+              error: result.error,
+            };
+            if (result.status === RecommendationQuestionStatus.FINISHED) {
+              this.telemetry.sendEvent(
+                TelemetryEvent.HOME_GENERATE_THREAD_RECOMMENDATION_QUESTIONS,
+                eventProperties,
+              );
+            } else {
+              this.telemetry.sendEvent(
+                TelemetryEvent.HOME_GENERATE_THREAD_RECOMMENDATION_QUESTIONS,
+                eventProperties,
+                WrenService.AI,
+                false,
+              );
+            }
+            this.logger.debug(
+              `${loggerPrefix}job ${this.taskKey(thread)} is finalized, removing`,
+            );
+            delete this.tasks[this.taskKey(thread)];
+            delete this.stalledPolls[this.taskKey(thread)];
+          }
+        } catch (error: any) {
+          const message =
+            error?.message || 'Failed to fetch recommendation question result';
+          this.logger.error(
+            `${loggerPrefix}job ${this.taskKey(thread)} failed while polling: ${message}`,
           );
           await this.threadRepository.updateOne(thread.id, {
-            questionsStatus: result.status.toUpperCase(),
-            questions: result.response?.questions,
-            questionsError: result.error,
+            questionsStatus: RecommendationQuestionStatus.FAILED,
+            questionsError: {
+              code: 'OTHERS',
+              message,
+            },
           });
-          thread.questionsStatus = result.status;
-          thread.questions = result.response?.questions;
-        }
-
-        // remove the task from tracker if it is finalized
-        if (isFinalized(result.status)) {
-          const eventProperties = {
-            thread_id: thread.id,
-            status: result.status,
-            questions: thread.questions,
-            error: result.error,
-          };
-          if (result.status === RecommendationQuestionStatus.FINISHED) {
-            this.telemetry.sendEvent(
-              TelemetryEvent.HOME_GENERATE_THREAD_RECOMMENDATION_QUESTIONS,
-              eventProperties,
-            );
-          } else {
-            this.telemetry.sendEvent(
-              TelemetryEvent.HOME_GENERATE_THREAD_RECOMMENDATION_QUESTIONS,
-              eventProperties,
-              WrenService.AI,
-              false,
-            );
-          }
-          this.logger.debug(
-            `${loggerPrefix}job ${this.taskKey(thread)} is finalized, removing`,
-          );
+          thread.questionsStatus = RecommendationQuestionStatus.FAILED;
           delete this.tasks[this.taskKey(thread)];
+          delete this.stalledPolls[this.taskKey(thread)];
+        } finally {
+          this.runningJobs.delete(this.taskKey(thread));
         }
-
-        // mark the job as finished
-        this.runningJobs.delete(this.taskKey(thread));
       });
 
       // run the jobs

@@ -28,6 +28,7 @@ export interface AskPromptData {
   askingTask?: AskingTask;
   askingStreamTask?: string;
   recommendedQuestions?: RecommendedQuestionsTask;
+  clarificationAnswers?: Record<string, string>;
 }
 
 export const getIsFinished = (status: AskingTaskStatus) =>
@@ -35,6 +36,7 @@ export const getIsFinished = (status: AskingTaskStatus) =>
     AskingTaskStatus.FINISHED,
     AskingTaskStatus.FAILED,
     AskingTaskStatus.STOPPED,
+    AskingTaskStatus.CLARIFYING,
   ].includes(status);
 
 export const canGenerateAnswer = (
@@ -160,6 +162,10 @@ const handleUpdateRerunAskingTaskCache = (
 export default function useAskPrompt(threadId?: number) {
   const [originalQuestion, setOriginalQuestion] = useState<string>('');
   const [threadQuestions, setThreadQuestions] = useState<string[]>([]);
+  const [clarificationAnswers, setClarificationAnswers] = useState<
+    Record<string, string>
+  >({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
   // Handle errors via try/catch blocks rather than onError callback
   const [createAskingTask, createAskingTaskResult] =
     useCreateAskingTaskMutation();
@@ -195,7 +201,11 @@ export default function useAskPrompt(threadId?: number) {
     [instantRecommendedQuestionsResult.data],
   );
 
-  const loading = askingStreamTaskResult.loading;
+  const loading =
+    isSubmitting ||
+    askingStreamTaskResult.loading ||
+    createAskingTaskResult.loading ||
+    askingTaskResult.loading;
 
   const data = useMemo(
     () => ({
@@ -203,8 +213,15 @@ export default function useAskPrompt(threadId?: number) {
       askingTask,
       askingStreamTask,
       recommendedQuestions,
+      clarificationAnswers,
     }),
-    [originalQuestion, askingTask, askingStreamTask, recommendedQuestions],
+    [
+      originalQuestion,
+      askingTask,
+      askingStreamTask,
+      recommendedQuestions,
+      clarificationAnswers,
+    ],
   );
 
   const startRecommendedQuestions = useCallback(async () => {
@@ -295,18 +312,33 @@ export default function useAskPrompt(threadId?: number) {
     }
   };
 
-  const onSubmit = async (value) => {
+  const onSubmit = async (
+    value,
+    nextClarificationAnswers?: Record<string, string>,
+  ) => {
     askingStreamTaskResult.reset();
+    askingTaskResult.stopPolling();
     setOriginalQuestion(value);
+    const mergedClarificationAnswers = nextClarificationAnswers || {};
+    setClarificationAnswers(mergedClarificationAnswers);
+    setIsSubmitting(true);
     try {
       const response = await createAskingTask({
-        variables: { data: { question: value, threadId } },
+        variables: {
+          data: {
+            question: value,
+            threadId,
+            clarificationAnswers: mergedClarificationAnswers,
+          },
+        },
       });
       await fetchAskingTask({
         variables: { taskId: response.data.createAskingTask.id },
       });
     } catch (error) {
       console.error(error);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -325,6 +357,14 @@ export default function useAskPrompt(threadId?: number) {
   const onStoreThreadQuestions = (questions: string[]) =>
     setThreadQuestions(questions);
 
+  const onAnswerClarification = async (questionId: string, answer: string) => {
+    const nextAnswers = {
+      ...clarificationAnswers,
+      [questionId]: answer,
+    };
+    await onSubmit(originalQuestion, nextAnswers);
+  };
+
   return {
     data,
     loading,
@@ -336,6 +376,7 @@ export default function useAskPrompt(threadId?: number) {
     onStopStreaming,
     onStopRecommend,
     onStoreThreadQuestions,
+    onAnswerClarification,
     inputProps: {
       placeholder: threadId
         ? 'Ask follow-up questions to explore your data'

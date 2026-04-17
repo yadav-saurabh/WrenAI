@@ -27,6 +27,7 @@ interface Props {
   onStopPolling: () => void;
   onStopStreaming: () => void;
   onStopRecommend: () => void;
+  onAnswerClarification: (questionId: string, answer: string) => Promise<void>;
   data: AskPromptData;
   loading: boolean;
   inputProps: {
@@ -60,6 +61,7 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
     onCreateResponse,
     onStopStreaming,
     onStopRecommend,
+    onAnswerClarification,
     inputProps,
   } = props;
   const askProcessState = useAskProcessState();
@@ -69,6 +71,7 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
     askingTask,
     askingStreamTask,
     recommendedQuestions,
+    clarificationAnswers,
   } = data;
 
   const result = useMemo(
@@ -77,6 +80,11 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
       originalQuestion, // original question
       askingStreamTask, // for general answer
       recommendedQuestions, // guiding user to ask
+      clarificationAnswers:
+        (askingTask?.clarificationAnswers as Record<string, string>) ||
+        clarificationAnswers,
+      clarificationQuestions: askingTask?.clarificationQuestions || [],
+      businessRuleViolations: askingTask?.businessRuleViolations || [],
       intentReasoning: askingTask?.intentReasoning || '',
     }),
     [data],
@@ -145,6 +153,12 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
     onSubmit && (await onSubmit(value));
   };
 
+  const answerClarification = async (questionId: string, answer: string) => {
+    askProcessState.transitionTo(PROCESS_STATE.UNDERSTANDING);
+    setShowResult(true);
+    onAnswerClarification && (await onAnswerClarification(questionId, answer));
+  };
+
   useImperativeHandle(
     ref,
     () => ({
@@ -173,6 +187,7 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
           onIntentSQLAnswer={intentSQLAnswer}
           onClose={closeResult}
           onStop={stopProcess}
+          onAnswerClarification={answerClarification}
         />
       )}
     </PromptStyle>

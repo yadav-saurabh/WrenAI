@@ -83,6 +83,14 @@ const COMMON_ASKING_TASK = gql`
     sqlGenerationReasoning
     retrievedTables
     invalidSql
+    clarificationQuestions {
+      id
+      question
+      options
+      reason
+    }
+    clarificationAnswers
+    businessRuleViolations
     traceId
     queryId
   }

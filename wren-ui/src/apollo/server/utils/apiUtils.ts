@@ -21,6 +21,7 @@ export const isAskResultFinished = (result: AskResult) => {
     result.status === AskResultStatus.FINISHED ||
     result.status === AskResultStatus.FAILED ||
     result.status === AskResultStatus.STOPPED ||
+    result.status === AskResultStatus.CLARIFYING ||
     result.error
   );
 };
@@ -47,6 +48,18 @@ export const validateAskResult = (
     }
 
     throw new ApiError(errorMessage, 400, result.error.code, additionalData);
+  }
+
+  if (result.status === AskResultStatus.CLARIFYING) {
+    throw new ApiError(
+      'More business context is needed before generating SQL',
+      400,
+      Errors.GeneralErrorCodes.AI_SERVICE_UNDEFINED_ERROR,
+      {
+        clarificationQuestions: result.clarificationQuestions || [],
+        businessRuleViolations: result.businessRuleViolations || [],
+      },
+    );
   }
 
   // Check for misleading query type

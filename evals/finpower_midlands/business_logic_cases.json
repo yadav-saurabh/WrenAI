@@ -1,0 +1,41 @@
+[
+  {
+    "question": "How many active clients do we have?",
+    "expected_result": 6074,
+    "needs_clarification": false
+  },
+  {
+    "question": "How many investors/clients (not brokers, not loans) don't have an email address?",
+    "expected_result": 805,
+    "needs_clarification": true,
+    "expected_clarifications": [
+      "population_definition",
+      "loan_exclusion_definition"
+    ],
+    "forbidden_sql_patterns": [
+      "client_type_id <> 'broker'",
+      "client_type_id <> 'loan'",
+      "accounts.client_ids ="
+    ]
+  },
+  {
+    "question": "How many investors/clients (not brokers, not loans) don't have an email address and what is the value of these investments and % of total investments?",
+    "expected_result": {
+      "count": 805,
+      "investment_value": -22516441.41,
+      "investment_percentage": 13.1772
+    },
+    "needs_clarification": true,
+    "expected_clarifications": [
+      "population_definition",
+      "investment_value_definition",
+      "loan_exclusion_definition"
+    ],
+    "forbidden_sql_patterns": [
+      "client_type_id <> 'broker'",
+      "client_type_id <> 'loan'",
+      "accounts.client_ids =",
+      "sum(cast(public_account_transactions.\"value\" as double precision))"
+    ]
+  }
+]

@@ -246,8 +246,10 @@ export default function TextBasedAnswer(props: AnswerResultProps) {
             <div className="mt-2 mb-3" data-guideid="text-answer-preview-data">
               {hasPreviewData && (
                 <Text type="secondary" className="text-sm">
-                  Considering the limit of the context window, we retrieve up to
-                  500 rows of results to generate the answer.
+                  The SQL itself runs on the full matching dataset. For
+                  natural-language answer generation, Wren may only send a
+                  limited preview of result rows to the model because of
+                  context-window limits.
                 </Text>
               )}
               <PreviewData

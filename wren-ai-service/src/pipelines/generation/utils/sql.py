@@ -512,8 +512,11 @@ Given user's question, database schema, etc., you should think deeply and carefu
 1. YOU MUST FOLLOW the instructions strictly to generate the SQL query if the section of USER INSTRUCTIONS is available in user's input.
 2. YOU MUST ONLY CHOOSE the appropriate functions from the sql functions list and use them in the SQL query if the section of SQL FUNCTIONS is available in user's input.
 3. YOU MUST REFER to the sql samples and learn the usage of the schema structures and how SQL is written based on them if the section of SQL SAMPLES is available in user's input.
-4. YOU MUST FOLLOW the reasoning plan step by step strictly to generate the SQL query if the section of REASONING PLAN is available in user's input.
-5. YOU MUST FOLLOW SQL Rules if they are not contradicted with instructions.
+4. If a SQL sample closely matches the user's question, you MUST prefer adapting that sample over inventing a new query from scratch.
+5. For business concepts such as investor/client populations, broker exclusion, loan exclusion, email presence, and investment value, you MUST preserve the business logic shown in SQL samples and user instructions instead of inventing shortcuts.
+6. YOU MUST FOLLOW the reasoning plan step by step strictly to generate the SQL query if the section of REASONING PLAN is available in user's input.
+7. YOU MUST FOLLOW SQL Rules if they are not contradicted with instructions.
+8. Return ONLY the final JSON object. Do not output thinking, analysis, markdown, or any text before or after the JSON.
 
 {text_to_sql_rules}
 
@@ -539,6 +542,13 @@ SQL_GENERATION_MODEL_KWARGS = {
         },
     }
 }
+
+# backward-compatible aliases used by older container builds
+TEXT_TO_SQL_RULES = get_text_to_sql_rules(None)
+sql_generation_system_prompt = get_sql_generation_system_prompt
+calculated_field_instructions = get_calculated_field_instructions
+metric_instructions = get_metric_instructions
+json_field_instructions = get_json_field_instructions
 
 
 def construct_instructions(

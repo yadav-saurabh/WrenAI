@@ -62,6 +62,7 @@ export interface AskingPayload {
 
 export interface AskingTaskInput {
   question: string;
+  clarificationAnswers?: Record<string, string>;
 }
 
 export interface AskingDetailTaskInput {
@@ -226,7 +227,8 @@ const isFinalized = (status: AskResultStatus) => {
   return (
     status === AskResultStatus.FAILED ||
     status === AskResultStatus.FINISHED ||
-    status === AskResultStatus.STOPPED
+    status === AskResultStatus.STOPPED ||
+    status === AskResultStatus.CLARIFYING
   );
 };
 
@@ -605,6 +607,7 @@ export class AskingService implements IAskingService {
       histories,
       deployId,
       configurations: { language },
+      clarificationAnswers: input.clarificationAnswers,
       rerunFromCancelled,
       previousTaskId,
       threadResponseId,

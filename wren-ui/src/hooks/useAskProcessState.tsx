@@ -24,6 +24,7 @@ export const convertAskingTaskToProcessState = (data: AskingTask) => {
     [AskingTaskStatus.PLANNING]: PROCESS_STATE.PLANNING,
     [AskingTaskStatus.GENERATING]: PROCESS_STATE.GENERATING,
     [AskingTaskStatus.CORRECTING]: PROCESS_STATE.CORRECTING,
+    [AskingTaskStatus.CLARIFYING]: PROCESS_STATE.FAILED,
     [AskingTaskStatus.FINISHED]: PROCESS_STATE.FINISHED,
     [AskingTaskStatus.STOPPED]: PROCESS_STATE.STOPPED,
     [AskingTaskStatus.FAILED]: PROCESS_STATE.FAILED,
